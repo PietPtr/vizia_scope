@@ -1,31 +1,98 @@
+//! This module provides a view for `nih_plug_vizia` for visual representation of audio or sample-by-sample level
+//! data on a grid, in the style of an oscilloscope. It provides three ways to draw data:
+//! * [`ConstantLine`]: which shows a horizontal line at a constant y.
+//! * [`SignalLine`]: which shows the signal as a line, usable for signals which don't vary much over short time spans
+//!     (e.g. envelopes, or very short pieces of audio data where the amount of samples is similar to the width of the scope)
+//! * [`AudioLine`]: which works well for zoomed out audio, where there is much more data than the width of the scope,
+//!     and the signal varies a lot over time.
+//!
+//! To create a new scope to show, create a struct with the necessary values/references to the data of the plugin and
+//! construct it. Implement [`ScopeData`] for this struct with an appropriate implementation for [`ScopeData::recalculate`].
+//! In [`ScopeData::scope_lines`], define a vector of lines to be displayed. For example, A scope that shows two constant
+//! thresholds, audio data, and an envelope signal could define its scope lines as follows:
+//!
+//!```
+//! # use vizia_scope::{ScopeData, ScopeLine, AudioLine, ConstantLine, SignalLine};
+//! # use nih_plug_vizia::vizia::vg::Color;
+//! # const SIGNAL_COLOR: Color = Color::rgbf(243.0 / 255.0, 250.0 / 255.0, 146.0 / 255.0);
+//! # const THRESHOLD_COLOR: Color = Color::rgbf(163.0 / 255.0, 144.0 / 255.0, 95.0 / 255.0);
+//! # const ENEVELOPE_COLOR: Color = Color::rgbf(255.0 / 255.0, 137.0 / 255.0, 137.0 / 255.0);
+//! pub struct SomeScope {
+//!     threshold: f32,
+//!     envelope: Vec<f32>,
+//!     audio: Vec<f32>,
+//! }
+//! 
+//! impl ScopeData for SomeScope {
+//!     fn recalculate(&mut self) {
+//!         // Recalculation code...    
+//!     }
+//!     
+//!     fn scope_lines(&self) -> Vec<ScopeLine> {
+//!         vec![
+//!             ScopeLine::Constant(ConstantLine::new(
+//!                 THRESHOLD_COLOR,
+//!                 self.threshold,
+//!             )),
+//!             ScopeLine::Constant(ConstantLine::new(
+//!                 THRESHOLD_COLOR,
+//!                 -self.threshold,
+//!             )),
+//!             ScopeLine::Audio(AudioLine::new(
+//!                 &self.audio,
+//!                 SIGNAL_COLOR,
+//!             )),
+//!             ScopeLine::Signal(SignalLine::new(
+//!                 &self.envelope,
+//!                 ENEVELOPE_COLOR,
+//!                 1.5,
+//!             )),
+//!         ]
+//!     }     
+//! }
+//! ```
+
 use nih_plug_vizia::vizia::{
     cache::BoundingBox,
     prelude::*,
     vg::{Color, Paint, Path},
 };
 
+/// An enumeration to represent a parameter update event. If this event is thrown into the Vizia event system
+/// the scopes will recalculate the signal they're showing.
 #[derive(Debug)]
 pub enum ParamUpdateEvent {
     ParamUpdate,
 }
 
+/// The three types of graphs the scope can draw.
+/// * [`SignalLine`]: which shows the signal as a line, usable for signals which don't vary much over short time spans
+///     (e.g. envelopes, or very short pieces of audio data where the amount of samples is similar to the width of the scope)
+/// * [`AudioLine`]: which works well for zoomed out audio, where there is much more data than the width of the scope,
+///     and the signal varies a lot over time.
 pub enum ScopeLine<'a> {
     Constant(ConstantLine),
     Signal(SignalLine<'a>),
     Audio(AudioLine<'a>),
 }
 
+/// Draws a line at a constant y.
 pub struct ConstantLine {
     constant: f32,
-    color: Color,
+    color: Color, // TODO: line width.
 }
 
+/// Instructions for drawing a horizontal line at the given constant in a certain color.
+/// # Parameters
+/// - `constant`: The level at which the constant should be drawn.
+/// - `color`: The color of the signal line.
 impl ConstantLine {
     pub fn new(color: Color, constant: f32) -> Self {
         Self { color, constant }
     }
 }
 
+/// Draws its samples as a single line signal. Useful for small amounts of samples and signals that don't vary much over time.
 pub struct SignalLine<'a> {
     samples: &'a Vec<f32>,
     color: Color,
@@ -33,6 +100,13 @@ pub struct SignalLine<'a> {
 }
 
 impl<'a> SignalLine<'a> {
+    /// Instructions for drawing a function shown as a line to the user. If there are more samples than the width
+    /// of the scope, the scope will average all samples that fall in the same pixel.
+    ///
+    /// # Parameters
+    /// - `samples`: Reference to a vector of sample values.
+    /// - `color`: The color of the signal line.
+    /// - `width`: The width of the signal line.
     pub fn new(samples: &'a Vec<f32>, color: Color, width: f32) -> Self {
         Self {
             samples,
@@ -42,6 +116,7 @@ impl<'a> SignalLine<'a> {
     }
 }
 
+/// Draws its data in a similar fashion as Audacity.
 pub struct AudioLine<'a> {
     samples: &'a Vec<f32>,
     color: Color,
@@ -53,22 +128,36 @@ impl<'a> AudioLine<'a> {
     }
 }
 
+/// A trait for types that can provide data for scope visualization. To define a scope, implement this trait as follows:
+/// * [`ScopeData::recalculate`]: Given the state of the struct, recalculate the current vector of sample values.
+/// * [`ScopeData::scope_lines`]: which lines to show on the scope.
 pub trait ScopeData {
     fn recalculate(&mut self);
     fn scope_lines(&self) -> Vec<ScopeLine>;
 }
 
+/// Encapsulates the scope view along with its configuration and data, and contains all the different drawing methods.
 pub struct ScopeView<T: ScopeData> {
     scope_data: T,
     config: ScopeConfig,
 }
 
+/// Holds configuration for the grid divisions in the scope view.
 pub struct ScopeConfig {
     x_divs: u32,
     y_divs: u32,
 }
 
 impl<T: ScopeData + 'static> ScopeView<T> {
+    /// Constructs a new `ScopeView` instance.
+    ///
+    /// # Parameters
+    /// - `cx`: A mutable reference to the vizia context.
+    /// - `scope_data`: The struct that contains the data to be visualized and the definition of which lines to show on the scope.
+    /// - `config`: An optional configuration for the general scope parameters.
+    ///
+    /// # Returns
+    /// - A vizia handle to the newly created `ScopeView` instance.
     pub fn new(cx: &mut Context, scope_data: T, config: Option<ScopeConfig>) -> Handle<Self> {
         let mut view = Self {
             scope_data,
@@ -82,6 +171,7 @@ impl<T: ScopeData + 'static> ScopeView<T> {
         view.build(cx, |_| {})
     }
 
+    /// Draws the grid lines on the scope canvas based on the divisions specified in the config in new.
     fn draw_grid(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
         let ScopeConfig { x_divs, y_divs } = self.config;
         let bounds = cx.bounds();
@@ -102,6 +192,7 @@ impl<T: ScopeData + 'static> ScopeView<T> {
         canvas.stroke_path(&mut grid_path, &grid_paint);
     }
 
+    /// Draws a [`ConstantLine`].
     fn draw_horizontal(&self, cx: &mut DrawContext, canvas: &mut Canvas, line: &ConstantLine) {
         let bounds = cx.bounds();
         let mut threshold_path = Path::new();
@@ -118,6 +209,7 @@ impl<T: ScopeData + 'static> ScopeView<T> {
         canvas.stroke_path(&mut threshold_path, &threshold_paint);
     }
 
+    /// Draws a [`SignalLine`].
     fn draw_signal(&self, cx: &mut DrawContext, canvas: &mut Canvas, line: &SignalLine) {
         let bounds = cx.bounds();
         let bucket_size = (line.samples.len() as f32 / bounds.w) as usize;
@@ -139,6 +231,7 @@ impl<T: ScopeData + 'static> ScopeView<T> {
         canvas.stroke_path(&mut path, &paint);
     }
 
+    /// Draws an [`AudioLine`].
     fn draw_audio(&self, cx: &mut DrawContext, canvas: &mut Canvas, line: &AudioLine) {
         let bounds = cx.bounds();
         let bucket_size = (line.samples.len() as f32 / bounds.w) as usize;
@@ -193,6 +286,7 @@ impl<T: ScopeData + 'static> ScopeView<T> {
         draw_wave(&line.samples, 0.5);
     }
 
+    // Draws a border around the scope.
     fn draw_border(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
         let BoundingBox { x, y, w, h } = cx.bounds();
 
@@ -206,17 +300,25 @@ impl<T: ScopeData + 'static> ScopeView<T> {
     }
 }
 
+/// Implements the vizia [`View`] trait for [`ScopeView`].
 impl<T: ScopeData + 'static> View for ScopeView<T> {
     fn element(&self) -> Option<&'static str> {
         Some("scope")
     }
 
+    /// Handles parameter update events, triggering a recalculation of the scope data whenever it receives
+    /// the [`ParamUpdateEvent::ParamUpdate`].
+    ///
+    /// # Parameters
+    /// - `_cx`: A mutable reference to the event context. Not used.
+    /// - `event`: A mutable reference to the event.
     fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
         event.map(|param_event, _| match param_event {
             ParamUpdateEvent::ParamUpdate => self.scope_data.recalculate(),
         });
     }
 
+    /// Renders the scope view on the canvas, drawing the background, grid, data lines, and border.
     fn draw(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
         let background_color = Color::rgb(0, 0, 0);
 
